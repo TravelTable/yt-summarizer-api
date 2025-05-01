@@ -1,4 +1,3 @@
-```python
 # app/models/__init__.py
 
 from typing import List, Optional
@@ -46,4 +45,3 @@ class ErrorResponse(BaseModel):
     Standard error response model.
     """
     detail: str = Field(..., description="Error message describing what went wrong.")
-```

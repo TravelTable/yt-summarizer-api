@@ -1,4 +1,4 @@
-```python
+
 # config/__init__.py
 
 import os
@@ -56,4 +56,3 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
-```

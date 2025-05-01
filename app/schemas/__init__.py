@@ -1,4 +1,3 @@
-```python
 # app/schemas/__init__.py
 
 from typing import List, Optional
@@ -45,4 +44,3 @@ class ErrorResponse(BaseModel):
         None,
         description="Optional error code."
     )
-```
