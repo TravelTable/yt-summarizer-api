@@ -1,20 +1,18 @@
-```python
-# app/routers/api_v1.py
-
 from fastapi import APIRouter, HTTPException, status, Body
 from pydantic import BaseModel, HttpUrl
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import openai
 import re
 import os
+import json
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["YouTube Summarizer"],
 )
 
-# Set your OpenAI API key (ensure it's set in your environment for production)
+# Set your OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable not set.")
@@ -33,11 +31,6 @@ class SummarizeResponse(BaseModel):
 # ----- Helper Functions -----
 
 def extract_video_id(youtube_url: str) -> str:
-    """
-    Extracts the video ID from a YouTube URL.
-    Supports various YouTube URL formats.
-    """
-    # Standard formats
     patterns = [
         r"(?:v=|\/)([0-9A-Za-z_-]{11}).*",
         r"youtu\.be\/([0-9A-Za-z_-]{11})",
@@ -50,22 +43,14 @@ def extract_video_id(youtube_url: str) -> str:
     raise ValueError("Invalid YouTube URL format.")
 
 def get_transcript(video_id: str) -> str:
-    """
-    Fetches the transcript for a given YouTube video ID.
-    Returns the transcript as a single string.
-    """
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        # Prefer English transcript if available
-        transcript = None
         try:
             transcript = transcript_list.find_transcript(['en'])
         except NoTranscriptFound:
-            # Fallback to manually translated English
             try:
                 transcript = transcript_list.find_manually_created_transcript(['en'])
             except NoTranscriptFound:
-                # Fallback to first available transcript
                 transcript = transcript_list.find_generated_transcript(transcript_list._langs)
         transcript_data = transcript.fetch()
         full_text = " ".join([entry['text'] for entry in transcript_data])
@@ -87,13 +72,7 @@ def get_transcript(video_id: str) -> str:
         )
 
 def gpt4_summarize_and_categorize(transcript: str) -> Dict[str, Any]:
-    """
-    Uses OpenAI GPT-4 to summarize the transcript and estimate categories.
-    Returns a dict with 'summary' and 'categories'.
-    """
-    # Truncate transcript if too long for context window
-    max_tokens = 6000  # GPT-4 context window is ~8k tokens, keep some for prompt/response
-    # Approximate: 1 token ≈ 4 chars in English
+    max_tokens = 6000
     max_chars = max_tokens * 4
     transcript_short = transcript[:max_chars]
 
@@ -122,15 +101,11 @@ def gpt4_summarize_and_categorize(transcript: str) -> Dict[str, Any]:
             max_tokens=512,
         )
         content = response['choices'][0]['message']['content']
-        # Try to parse the JSON from the response
-        import json
-        # Find the JSON object in the response
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if not match:
             raise ValueError("No JSON object found in GPT-4 response.")
         json_str = match.group(0)
         result = json.loads(json_str)
-        # Validate result
         if 'summary' not in result or 'categories' not in result:
             raise ValueError("Malformed GPT-4 response.")
         if not isinstance(result['categories'], list):
@@ -151,10 +126,6 @@ def gpt4_summarize_and_categorize(transcript: str) -> Dict[str, Any]:
     response_description="The transcript, summary, and estimated categories of the video."
 )
 async def summarize_youtube_video(request: SummarizeRequest = Body(...)):
-    """
-    Given a YouTube video URL, extract the transcript, summarize it using GPT-4,
-    and estimate relevant categories based on the content.
-    """
     try:
         video_id = extract_video_id(request.youtube_url)
     except ValueError as e:
@@ -171,4 +142,3 @@ async def summarize_youtube_video(request: SummarizeRequest = Body(...)):
         summary=gpt_result['summary'],
         categories=gpt_result['categories']
     )
-```
