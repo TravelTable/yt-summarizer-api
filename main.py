@@ -215,5 +215,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Run
 # ---------------------------
 
+@app.get("/")
+def root():
+    return {"message": "YouTube Summarizer API is running!"}
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=True)
+
