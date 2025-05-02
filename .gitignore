@@ -1,4 +1,13 @@
-venv/ 
-__pycache__/ 
-.env 
-*.pyc 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+
+# Environment
+.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
