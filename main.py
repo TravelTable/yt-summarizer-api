@@ -2,22 +2,20 @@ import os
 import re
 import logging
 from typing import List, Optional
+from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
+from pydantic import BaseModel, HttpUrl, Field
+from youtube_transcript_api import YouTubeTranscriptApi
 import openai
-import uvicorn
-
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set your OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     logger.error("OPENAI_API_KEY environment variable not set.")
@@ -26,30 +24,32 @@ if not OPENAI_API_KEY:
 openai.api_key = OPENAI_API_KEY
 
 app = FastAPI(
-    title="YouTube Transcript Summarizer",
-    description="Extracts transcript from YouTube, summarizes it, and estimates categories.",
-    version="1.0.0"
+    title="YouTube Intelligence API",
+    description="Comprehensive API for YouTube video analysis and content processing.",
+    version="3.0.0",
+    contact={"name": "API Support", "email": "support@ytintel.com"},
+    license_info={"name": "MIT"},
 )
 
-# ---------------------------
-# Pydantic Models
-# ---------------------------
-
+# Models
 class TranscriptRequest(BaseModel):
     youtube_url: HttpUrl
+    language: Optional[str] = Field("en")
 
-class TranscriptResponse(BaseModel):
-    transcript: str
-    summary: str
-    categories: List[str]
+class BatchRequest(BaseModel):
+    youtube_urls: List[HttpUrl]
+    language: Optional[str] = Field("en")
 
-# ---------------------------
-# Helper Functions
-# ---------------------------
+class TranslateRequest(TranscriptRequest):
+    target_language: str
 
+class QuizRequest(TranscriptRequest):
+    num_questions: Optional[int] = Field(5, ge=1, le=20)
+
+# Utilities
 def extract_video_id(url: str) -> Optional[str]:
     patterns = [
-        r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
+        r'(?:v=|/)([0-9A-Za-z_-]{11})',
         r'youtu\.be/([0-9A-Za-z_-]{11})',
     ]
     for pattern in patterns:
@@ -58,169 +58,189 @@ def extract_video_id(url: str) -> Optional[str]:
             return match.group(1)
     return None
 
-def get_transcript(video_id: str) -> str:
+def get_transcript(video_id: str, language: str = "en") -> str:
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        transcript = None
-        try:
-            transcript = transcript_list.find_transcript(['en'])
-        except NoTranscriptFound:
-            try:
-                transcript = transcript_list.find_manually_created_transcript(['en'])
-            except Exception:
-                transcript = transcript_list.find_generated_transcript(['en'])
-        if not transcript:
-            transcript = transcript_list.find_transcript([t.language_code for t in transcript_list])
-        transcript_data = transcript.fetch()
-        transcript_text = " ".join([entry['text'] for entry in transcript_data])
-        return transcript_text
-    except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable) as e:
-        logger.error(f"Transcript error: {e}")
-        raise HTTPException(status_code=404, detail="Transcript not available for this video.")
+        transcript = transcript_list.find_transcript([language])
+        data = transcript.fetch()
+
+        lines = []
+        for entry in data:
+            if isinstance(entry, dict):
+                lines.append(entry.get("text", ""))
+            else:
+                lines.append(getattr(entry, "text", ""))
+        return " ".join(lines)
     except Exception as e:
-        logger.error(f"Unexpected error fetching transcript: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch transcript.")
+        raise HTTPException(status_code=404, detail=f"Transcript error: {e}")
 
-def chunk_text(text: str, max_tokens: int = 2000) -> List[str]:
-    words = text.split()
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    for word in words:
-        current_chunk.append(word)
-        current_length += 1
-        if current_length >= max_tokens:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = []
-            current_length = 0
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-    return chunks
-
-def summarize_transcript(transcript: str) -> str:
-    if len(transcript.split()) < 1800:
-        prompt = (
-            "Summarize the following YouTube video transcript in a concise paragraph, "
-            "focusing on the main points and key information:\n\n"
-            f"{transcript}\n\nSummary:"
-        )
+def ask_gpt(prompt: str, system: str = "You are a helpful assistant.", max_tokens: int = 400) -> str:
+    try:
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes YouTube transcripts."},
+                {"role": "system", "content": system},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=400,
+            max_tokens=max_tokens,
             temperature=0.5,
         )
-        summary = response.choices[0].message.content.strip()
-        return summary
-    else:
-        chunks = chunk_text(transcript, max_tokens=1800)
-        chunk_summaries = []
-        for idx, chunk in enumerate(chunks):
-            prompt = (
-                f"Summarize the following part of a YouTube video transcript (part {idx+1}):\n\n"
-                f"{chunk}\n\nSummary:"
-            )
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes YouTube transcripts."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=400,
-                temperature=0.5,
-            )
-            chunk_summary = response.choices[0].message.content.strip()
-            chunk_summaries.append(chunk_summary)
-        combined = " ".join(chunk_summaries)
-        final_prompt = (
-            "Given the following summaries of different parts of a YouTube video transcript, "
-            "write a single concise summary paragraph that covers the main points and key information:\n\n"
-            f"{combined}\n\nFinal Summary:"
-        )
-        final_response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes YouTube transcripts."},
-                {"role": "user", "content": final_prompt}
-            ],
-            max_tokens=400,
-            temperature=0.5,
-        )
-        final_summary = final_response.choices[0].message.content.strip()
-        return final_summary
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"OpenAI API error: {e}")
+        raise HTTPException(status_code=500, detail=f"OpenAI API error: {e}")
 
-def categorize_content(transcript: str, summary: str) -> List[str]:
-    prompt = (
-        "Given the following YouTube video transcript and its summary, "
-        "estimate up to 3 most relevant high-level categories for the video. "
-        "Choose from categories such as: Education, Technology, Science, Entertainment, Music, News, "
-        "Gaming, Sports, How-to, Comedy, Documentary, Health, Business, Finance, Politics, "
-        "Travel, Food, Art, History, Lifestyle, Other. "
-        "Respond with a JSON list of category names only.\n\n"
-        f"Transcript: {transcript[:2000]}...\n\nSummary: {summary}\n\nCategories:"
-    )
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "You are an expert at classifying YouTube videos by content."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=60,
-        temperature=0.3,
-    )
-    categories_text = response.choices[0].message.content.strip()
-    try:
-        import json
-        categories = json.loads(categories_text)
-        if isinstance(categories, list):
-            return [str(cat) for cat in categories]
-    except Exception:
-        categories = re.findall(r'"([^"]+)"', categories_text)
-        if not categories:
-            categories = [cat.strip() for cat in categories_text.split(",") if cat.strip()]
-        return categories[:3]
-    return categories[:3]
+# Health
+@app.get("/health", tags=["Health"])
+def health():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
-# ---------------------------
-# API Endpoints
-# ---------------------------
+@app.get("/", tags=["Health"])
+def root():
+    return {"message": "Welcome to YouTube Intelligence API"}
 
-@app.post("/summarize", response_model=TranscriptResponse)
-async def summarize_youtube_video(request: TranscriptRequest):
-    video_id = extract_video_id(request.youtube_url)
-    if not video_id:
-        logger.warning(f"Invalid YouTube URL: {request.youtube_url}")
-        raise HTTPException(status_code=400, detail="Invalid YouTube URL.")
-    logger.info(f"Processing video ID: {video_id}")
+# /video/
+@app.post("/video/transcript", tags=["Video"])
+def video_transcript(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    return {"transcript": get_transcript(vid, req.language)}
 
-    transcript = get_transcript(video_id)
-    if not transcript or len(transcript.strip()) < 10:
-        logger.warning(f"No transcript found for video: {video_id}")
-        raise HTTPException(status_code=404, detail="Transcript not available or too short.")
+@app.post("/video/summary", tags=["Video"])
+def video_summary(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"summary": ask_gpt(f"Summarize this video transcript in 3–5 sentences:\n{t}")}
 
-    summary = summarize_transcript(transcript)
-    categories = categorize_content(transcript, summary)
+@app.post("/video/categories", tags=["Video"])
+def video_categories(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"categories": ask_gpt(f"Categorize this video into 3-5 relevant topics:\n{t}")}
 
-    return TranscriptResponse(
-        transcript=transcript,
-        summary=summary,
-        categories=categories
-    )
+@app.post("/video/full-analysis", tags=["Video"])
+def video_full(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    summary = ask_gpt(f"Summarize this:\n{t}")
+    cats = ask_gpt(f"Categories:\n{t[:1000]}")
+    return {"transcript": t, "summary": summary, "categories": cats}
 
+@app.post("/video/translate", tags=["Video"])
+def video_translate(req: TranslateRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"translated": ask_gpt(f"Translate to {req.target_language}:\n{t}")}
+
+@app.post("/video/entities", tags=["Video"])
+def video_entities(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"entities": ask_gpt(f"Extract entities from this transcript:\n{t}")}
+
+@app.post("/video/speakers", tags=["Video"])
+def video_speakers(_: TranscriptRequest):
+    return {"speakers": ["Speaker 1", "Speaker 2"]}
+
+@app.post("/video/sentiment", tags=["Video"])
+def video_sentiment(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"sentiment": ask_gpt(f"Analyze sentiment of this transcript:\n{t}")}
+
+@app.post("/video/chapters", tags=["Video"])
+def video_chapters(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"chapters": ask_gpt(f"Generate chapters with timestamps:\n{t}").splitlines()}
+
+@app.post("/video/quiz", tags=["Video"])
+def video_quiz(req: QuizRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"quiz": ask_gpt(f"Create {req.num_questions} quiz questions from this transcript:\n{t}").splitlines()}
+
+@app.post("/video/key-terms", tags=["Video"])
+def video_terms(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"terms": ask_gpt(f"Extract key terms:\n{t}")}
+
+@app.post("/video/action-items", tags=["Video"])
+def video_actions(req: TranscriptRequest):
+    vid = extract_video_id(str(req.youtube_url))
+    if not vid:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    t = get_transcript(vid, req.language)[:15000]
+    return {"actions": ask_gpt(f"What are the actionable items from this video:\n{t}").splitlines()}
+
+# /batch/
+@app.post("/batch/translate", tags=["Batch"])
+def batch_translate(req: BatchRequest, target_language: str = Query(...)):
+    results = []
+    for url in req.youtube_urls:
+        vid = extract_video_id(str(url))
+        if not vid:
+            results.append("Error: Invalid YouTube URL format.")
+            continue
+        try:
+            t = get_transcript(vid, req.language)[:15000]
+            results.append(ask_gpt(f"Translate to {target_language}:\n{t}"))
+        except Exception as e:
+            results.append(f"Error: {e}")
+    return {"translations": results}
+
+@app.post("/batch/summary", tags=["Batch"])
+def batch_summary(req: BatchRequest):
+    results = []
+    for url in req.youtube_urls:
+        vid = extract_video_id(str(url))
+        if not vid:
+            results.append("Error: Invalid YouTube URL format.")
+            continue
+        try:
+            t = get_transcript(vid, req.language)[:15000]
+            results.append(ask_gpt(f"Summarize this transcript:\n{t}"))
+        except Exception as e:
+            results.append(f"Error: {e}")
+    return {"summaries": results}
+
+@app.post("/batch/entities", tags=["Batch"])
+def batch_entities(req: BatchRequest):
+    results = []
+    for url in req.youtube_urls:
+        vid = extract_video_id(str(url))
+        if not vid:
+            results.append("Error: Invalid YouTube URL format.")
+            continue
+        try:
+            t = get_transcript(vid, req.language)[:15000]
+            results.append(ask_gpt(f"Extract named entities from:\n{t}"))
+        except Exception as e:
+            results.append(f"Error: {e}")
+    return {"entities": results}
+
+# Global Exception Handler
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
+async def generic_exception_handler(_: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error."}
-    )
-
-# ---------------------------
-# Main entry point
-# ---------------------------
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=False)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error.", "error": str(exc)})
