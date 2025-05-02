@@ -1,0 +1,120 @@
+openapi: 3.1.0
+info:
+  title: YouTube Summarizer API
+  description: |
+    Extracts transcripts from YouTube videos, summarizes them with AI (GPT-4), and classifies the content into categories.
+    Includes modular endpoints for transcript, summary, categories, or full batch response.
+  version: "2.0.0"
+  contact:
+    name: Your Name
+    url: https://your-site.com
+    email: you@example.com
+
+servers:
+  - url: https://your-render-url.onrender.com
+    description: Production Server
+
+paths:
+  /video/transcript:
+    post:
+      summary: Get video transcript
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoRequest'
+      responses:
+        '200':
+          description: Transcript extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscriptResponse'
+  /video/summary:
+    post:
+      summary: Get AI summary of a video
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoRequest'
+      responses:
+        '200':
+          description: Summary generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryResponse'
+  /video/categories:
+    post:
+      summary: Get categories based on transcript and summary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoRequest'
+      responses:
+        '200':
+          description: Categories identified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+  /batch/full:
+    post:
+      summary: Get full transcript, summary, and categories in one request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoRequest'
+      responses:
+        '200':
+          description: Full data returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoSummaryResponse'
+
+components:
+  schemas:
+    VideoRequest:
+      type: object
+      properties:
+        youtube_url:
+          type: string
+          format: uri
+      required:
+        - youtube_url
+    TranscriptResponse:
+      type: object
+      properties:
+        transcript:
+          type: string
+    SummaryResponse:
+      type: object
+      properties:
+        summary:
+          type: string
+    CategoryResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          items:
+            type: string
+    VideoSummaryResponse:
+      type: object
+      properties:
+        transcript:
+          type: string
+        summary:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
