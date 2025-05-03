@@ -29,3 +29,4 @@ urllib3==2.4.0
 uvicorn==0.34.2
 yarl==1.20.0
 youtube-transcript-api==1.0.3
+python-3.11

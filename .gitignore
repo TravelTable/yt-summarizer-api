@@ -1,12 +1,11 @@
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
+*.pyc
 *.log
 
-# Environment
-.env
+# Env
 .venv/
+.env
 
 # IDE
 .vscode/
