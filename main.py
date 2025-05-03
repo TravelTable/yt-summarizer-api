@@ -74,10 +74,10 @@ def get_transcript(video_id: str, language: str = "en") -> str:
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Transcript error: {e}")
 
-def ask_gpt(prompt: str, system: str = "You are a helpful assistant.", max_tokens: int = 400) -> str:
+def ask_gpt(prompt: str, system: str = "You are a helpful assistant.", max_tokens: int = 8000) -> str:
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo-16k",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt}
